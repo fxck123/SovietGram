@@ -1,0 +1,57 @@
+name: test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    env:
+      NATIVE_TARGET: arm64-v8a
+      LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore Google Services config
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "GOOGLE_SERVICES_JSON secret is required"
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > TMessagesProj/google-services.json
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK Tools
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "build-tools;36.0.0 ndk;27.2.12479018 platforms;android-36"
+
+      - name: Configure local properties
+        run: |
+          echo "sdk.dir=${ANDROID_HOME}" >> local.properties
+          if [ -n "$LOCAL_PROPERTIES" ]; then
+            echo "$LOCAL_PROPERTIES" | base64 -d >> local.properties
+          fi
+
+      - name: Build test APK
+        run: |
+          ./gradlew TMessagesProj:assembleStaging
+          APK_DIR=$(dirname "$(find TMessagesProj/build/outputs/apk -name '*arm64-v8a*.apk' | head -n 1)")
+          echo "APK_DIR=$APK_DIR" >> "$GITHUB_ENV"
+
+      - name: Upload test
+        uses: actions/upload-artifact@v4
+        with:
+          name: test
+          path: ${{ env.APK_DIR }}

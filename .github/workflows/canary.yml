@@ -1,0 +1,86 @@
+name: Canary build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  models: read
+
+jobs:
+  build:
+    name: Gradle Build
+    runs-on: ubuntu-latest
+    outputs:
+      build_timestamp: ${{ steps.staging_build_step.outputs.build_timestamp }}
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_HARDLINK: "true"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_MAXSIZE: "10G"
+      NATIVE_TARGET: "arm64-v8a"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Restore Google Services config
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "GOOGLE_SERVICES_JSON secret is required"
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > TMessagesProj/google-services.json
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - name: Set up Ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          append-timestamp: false
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-disabled: true
+      - name: Set up Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle
+          key: gradle-${{ hashFiles('**/*.gradle') }}
+      - name: Set up Android SDK Tools
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "build-tools;36.0.0 ndk;27.2.12479018 platforms;android-36"
+      - name: Configure Android SDK Path
+        run: |
+          echo "sdk.dir=${ANDROID_HOME}" >> local.properties
+      - name: Modify Gradle JVM Args
+        run: |
+          MEMORY_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          MEMORY_GB=$((MEMORY_KB / 1024 / 1024))
+          echo "Detected memory size: ${MEMORY_GB}GB"
+          if [ $MEMORY_GB -ge 12 ]; then
+            sed -i '/^org\.gradle\.jvmargs=/d' gradle.properties
+            echo "org.gradle.jvmargs=-Xmx8G -XX:MaxMetaspaceSize=2G -XX:+UseParallelGC -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8" >> gradle.properties
+          fi
+          cat gradle.properties
+      - name: Staging Build
+        id: staging_build_step
+        env:
+          COMMIT_ID: ${{ github.event.head_commit.id }}
+        run: |
+          export LOCAL_PROPERTIES="${{ secrets.LOCAL_PROPERTIES }}"
+          export BUILD_TIMESTAMP=$(date +%s)
+          echo "build_timestamp=$BUILD_TIMESTAMP" >> "$GITHUB_OUTPUT"
+          ./gradlew TMessagesProj:assembleStaging
+
+          APK=$(find TMessagesProj/build/outputs/apk -name '*arm64-v8a*.apk')
+          APK=$(dirname $APK)
+          echo "APK=$APK" >> $GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Staging
+          path: ${{ env.APK }}

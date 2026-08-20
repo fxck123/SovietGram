@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'TMessagesProj/**'
+      - 'gradle/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: ubuntu-latest
+    env:
+      NATIVE_TARGET: arm64-v8a
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "build-tools;36.0.0 ndk;27.2.12479018 platforms;android-36"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore build configuration
+        env:
+          LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
+          KEYSTORE_JKS: ${{ secrets.KEYSTORE_JKS }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -eu
+          if [ -z "${LOCAL_PROPERTIES:-}" ] || [ -z "${KEYSTORE_JKS:-}" ] || [ -z "${GOOGLE_SERVICES_JSON:-}" ]; then
+            echo "Missing secret: need LOCAL_PROPERTIES, KEYSTORE_JKS and GOOGLE_SERVICES_JSON"
+            exit 1
+          fi
+          printf '%s' "$LOCAL_PROPERTIES" | tr -d '[:space:]' | base64 -d > local.properties
+          printf '%s' "$KEYSTORE_JKS" | tr -d '[:space:]' | base64 -d > TMessagesProj/release.keystore
+          printf '%s' "$GOOGLE_SERVICES_JSON" | tr -d '[:space:]' | base64 -d > TMessagesProj/google-services.json
+          printf '\nsdk.dir=%s\nKEYSTORE_PATH=release.keystore\n' "$ANDROID_HOME" >> local.properties
+
+      - name: Tune Gradle memory
+        run: |
+          set -eu
+          MEMORY_GB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 ))
+          if [ "$MEMORY_GB" -ge 12 ]; then
+            sed -i '/^org\.gradle\.jvmargs=/d' gradle.properties
+            echo "org.gradle.jvmargs=-Xmx8G -XX:MaxMetaspaceSize=2G -XX:+UseParallelGC -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8" >> gradle.properties
+          fi
+
+      - name: Build release
+        run: ./gradlew :TMessagesProj:assembleRelease -x lint -x uploadCrashlyticsMappingFileRelease
+
+      - name: Locate APK
+        id: apk
+        run: |
+          set -eu
+          APK=$(find TMessagesProj/build/outputs/apk/release -name '*.apk' | head -1)
+          if [ -z "$APK" ]; then
+            echo "No APK found"
+            exit 1
+          fi
+          NAME=$(basename "$APK")
+          VERNAME=$(printf '%s' "$NAME" | sed -nE 's/.*-v([^()]+)\(.*/\1/p')
+          VERCODE=$(printf '%s' "$NAME" | sed -nE 's/.*\(([0-9]+)\).*/\1/p')
+          echo "$NAME versionName=$VERNAME versionCode=$VERCODE"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "vername=$VERNAME" >> "$GITHUB_OUTPUT"
+          echo "vercode=$VERCODE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: build-${{ github.run_number }}
+          VERNAME: ${{ steps.apk.outputs.vername }}
+          VERCODE: ${{ steps.apk.outputs.vercode }}
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          set -eu
+          SUBJECT=$(git log -1 --pretty=%s)
+          NOTES=$(printf '%s\n\nversionCode %s\n%s\n' "$SUBJECT" "$VERCODE" "$GITHUB_SHA")
+          gh release create "$TAG" "$APK" --title "SovietGram v${VERNAME} (${VERCODE})" --notes "$NOTES" --target "$GITHUB_SHA"
