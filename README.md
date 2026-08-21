@@ -79,13 +79,7 @@ SovietGram стоит на чужой работе, и список длинны
 
 <div align="center">
 
-<a href="https://star-history.com/#fxck123/SovietGram&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=fxck123/SovietGram&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=fxck123/SovietGram&type=Date" />
-    <img alt="История звёзд" src="https://api.star-history.com/svg?repos=fxck123/SovietGram&type=Date" />
-  </picture>
-</a>
+
 
 <br /><br />
 
